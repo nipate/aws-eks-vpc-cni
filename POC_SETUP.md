@@ -14,10 +14,10 @@ eksctl version
 ```bash
 # Create minimal cluster for POC (cost-efficient)
 eksctl create cluster \
-  --name network-policy-poc \
+  --name vpc-cni-argocd-poc \
   --region us-east-1 \
   --nodegroup-name poc-workers \
-  --node-type t3.small \
+  --node-type t3.micro \
   --nodes 1 \
   --nodes-min 1 \
   --nodes-max 2 \
