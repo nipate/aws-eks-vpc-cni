@@ -20,6 +20,7 @@ env:
   NAMESPACE: argocd
   CLUSTER_NAME: vpc-cni-argocd-poc
   REGION: us-east-1
+  S3_BACKUP_BUCKET: "argocd-upgrade-backups"  # S3 bucket for persistent backups
 
 jobs:
   dry-run-validation:
@@ -60,6 +61,8 @@ jobs:
         
     - name: Run dry run validation
       id: dry-run
+      env:
+        S3_BACKUP_BUCKET: ${{ env.S3_BACKUP_BUCKET }}
       run: |
         cd argocd
         chmod +x upgrade-comprehensive.sh
@@ -136,6 +139,8 @@ jobs:
         helm repo update
         
     - name: Execute actual upgrade
+      env:
+        S3_BACKUP_BUCKET: ${{ env.S3_BACKUP_BUCKET }}
       run: |
         cd argocd
         chmod +x upgrade-comprehensive.sh
