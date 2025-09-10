@@ -1,0 +1,86 @@
+name: ArgoCD Upgrade POC
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Target ArgoCD version'
+        required: true
+        default: 'v2.15.0'
+      helm_chart_version:
+        description: 'Target Helm chart version'
+        required: true
+        default: '7.10.0'
+
+env:
+  NAMESPACE: argocd
+  RELEASE_NAME: argocd
+
+jobs:
+  upgrade-argocd:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+        
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region us-east-1 --name your-cluster-name
+        
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.12.0'
+        
+    - name: Add ArgoCD Helm repo
+      run: |
+        helm repo add argo https://argoproj.github.io/argo-helm
+        helm repo update
+        
+    - name: Pre-upgrade health check
+      run: |
+        kubectl get pods -n $NAMESPACE
+        kubectl get svc -n $NAMESPACE
+        
+    - name: Backup current ArgoCD config
+      run: |
+        kubectl get secret argocd-secret -n $NAMESPACE -o yaml > argocd-secret-backup.yaml
+        kubectl get configmap argocd-cm -n $NAMESPACE -o yaml > argocd-cm-backup.yaml
+        
+    - name: Update values file
+      run: |
+        sed -i "s/tag: \".*\"/tag: \"${{ github.event.inputs.target_version }}\"/" argocd/values-upgrade.yaml
+        
+    - name: Upgrade ArgoCD
+      run: |
+        helm upgrade $RELEASE_NAME argo/argo-cd \
+          --version ${{ github.event.inputs.helm_chart_version }} \
+          --namespace $NAMESPACE \
+          --values argocd/values-upgrade.yaml \
+          --wait --timeout=10m
+          
+    - name: Post-upgrade verification
+      run: |
+        kubectl rollout status deployment/argocd-server -n $NAMESPACE --timeout=300s
+        kubectl rollout status deployment/argocd-repo-server -n $NAMESPACE --timeout=300s
+        kubectl rollout status deployment/argocd-application-controller -n $NAMESPACE --timeout=300s
+        
+    - name: Health check
+      run: |
+        kubectl get pods -n $NAMESPACE
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n $NAMESPACE --timeout=300s
+        
+    - name: Get ArgoCD info
+      run: |
+        echo "ArgoCD Server URL:"
+        kubectl get svc argocd-server -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+        echo -e "\n\nArgoCD Version:"
+        kubectl get deployment argocd-server -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}'

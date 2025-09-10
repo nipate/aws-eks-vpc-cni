@@ -1,0 +1,135 @@
+name: Deploy EKS and ArgoCD Upgrade POC
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_eks:
+        description: 'Deploy EKS cluster'
+        type: boolean
+        default: true
+      upgrade_argocd:
+        description: 'Upgrade ArgoCD after deployment'
+        type: boolean
+        default: false
+      target_version:
+        description: 'Target ArgoCD version'
+        default: 'v2.15.0'
+
+env:
+  CLUSTER_NAME: argocd-upgrade-poc
+  REGION: us-east-1
+  NAMESPACE: argocd
+
+jobs:
+  deploy-eks:
+    if: ${{ github.event.inputs.deploy_eks == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      cluster-name: ${{ env.CLUSTER_NAME }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.REGION }}
+        
+    - name: Deploy EKS cluster
+      run: |
+        sed -i "s/name: .*/name: $CLUSTER_NAME/" eks/eks-cluster.yaml
+        kubectl apply -f eks/eks-cluster.yaml
+        
+    - name: Wait for EKS cluster
+      run: |
+        aws eks wait cluster-active --name $CLUSTER_NAME --region $REGION
+        aws eks update-kubeconfig --region $REGION --name $CLUSTER_NAME
+        kubectl wait --for=condition=ready nodes --all --timeout=600s
+
+  deploy-argocd:
+    needs: [deploy-eks]
+    if: ${{ always() && (needs.deploy-eks.result == 'success' || github.event.inputs.deploy_eks == 'false') }}
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.REGION }}
+        
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region $REGION --name $CLUSTER_NAME
+        
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.12.0'
+        
+    - name: Deploy ArgoCD v2.14.11
+      run: |
+        chmod +x argocd/helm-install.sh
+        ./argocd/helm-install.sh
+        
+    - name: Verify ArgoCD deployment
+      run: |
+        kubectl get pods -n $NAMESPACE
+        echo "Current ArgoCD version:"
+        kubectl get deployment argocd-server -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}'
+        
+    - name: Get ArgoCD access info
+      run: |
+        echo "ArgoCD admin password:"
+        kubectl -n $NAMESPACE get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+        echo -e "\n\nArgoCD URL:"
+        kubectl get svc argocd-server -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+  upgrade-argocd:
+    needs: [deploy-argocd]
+    if: ${{ github.event.inputs.upgrade_argocd == 'true' && needs.deploy-argocd.result == 'success' }}
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.REGION }}
+        
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region $REGION --name $CLUSTER_NAME
+        
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.12.0'
+        
+    - name: Pre-upgrade verification
+      run: |
+        echo "Current ArgoCD version before upgrade:"
+        kubectl get deployment argocd-server -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}'
+        kubectl get pods -n $NAMESPACE
+        
+    - name: Upgrade ArgoCD
+      run: |
+        chmod +x argocd/upgrade-local.sh
+        ./argocd/upgrade-local.sh ${{ github.event.inputs.target_version }} 7.10.0
+        
+    - name: Post-upgrade verification
+      run: |
+        echo "ArgoCD version after upgrade:"
+        kubectl get deployment argocd-server -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}'
+        kubectl get pods -n $NAMESPACE
