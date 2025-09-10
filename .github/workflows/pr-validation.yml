@@ -1,0 +1,89 @@
+name: PR Validation - ArgoCD Dry Run
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'argocd/**'
+      - '.github/workflows/**'
+
+env:
+  NAMESPACE: argocd
+  CLUSTER_NAME: vpc-cni-argocd-poc
+  REGION: us-east-1
+
+jobs:
+  pr-dry-run:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout PR branch
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.REGION }}
+        
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region $REGION --name $CLUSTER_NAME
+        
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.12.0'
+        
+    - name: Add ArgoCD Helm repo
+      run: |
+        helm repo add argo https://argoproj.github.io/argo-helm
+        helm repo update
+        
+    - name: Validate ArgoCD changes
+      run: |
+        cd argocd
+        chmod +x upgrade-comprehensive.sh
+        
+        # Run dry run validation for PR
+        ./upgrade-comprehensive.sh v2.15.0 7.6.12 true > pr-validation.log 2>&1
+        
+        # Check validation results
+        if grep -q "dry run for argocd" pr-validation.log; then
+          echo "✅ PR validation successful - ArgoCD changes are valid"
+        else
+          echo "❌ PR validation failed - ArgoCD changes have issues"
+          cat pr-validation.log
+          exit 1
+        fi
+        
+    - name: PR validation summary
+      run: |
+        echo "## 🧪 ArgoCD Validation Results" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Dry run validation passed**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "The ArgoCD configuration changes in this PR have been validated successfully." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Next steps:**" >> $GITHUB_STEP_SUMMARY
+        echo "1. Review and approve this PR" >> $GITHUB_STEP_SUMMARY
+        echo "2. Merge to main branch" >> $GITHUB_STEP_SUMMARY
+        echo "3. Run the upgrade pipeline manually when ready" >> $GITHUB_STEP_SUMMARY
+        
+        # Show validation results
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>View validation log</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        tail -50 argocd/pr-validation.log >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+          
+    - name: Upload PR validation artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: pr-validation-${{ github.event.number }}
+        path: |
+          argocd/pr-validation.log
+          argocd/backup/
+        retention-days: 7
