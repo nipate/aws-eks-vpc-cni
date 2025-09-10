@@ -58,38 +58,26 @@ jobs:
           exit 1
         fi
         
-    - name: Comment PR with results
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const fs = require('fs');
-          const logContent = fs.readFileSync('argocd/pr-validation.log', 'utf8');
-          
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: `## 🧪 ArgoCD Validation Results
-            
-            ✅ **Dry run validation passed**
-            
-            The ArgoCD configuration changes in this PR have been validated successfully.
-            
-            <details>
-            <summary>View validation details</summary>
-            
-            \`\`\`
-            ${logContent.slice(-2000)}
-            \`\`\`
-            
-            </details>
-            
-            **Next steps:**
-            1. Review and approve this PR
-            2. Merge to main branch  
-            3. Run the upgrade pipeline manually when ready
-            `
-          });
+    - name: PR validation summary
+      run: |
+        echo "## 🧪 ArgoCD Validation Results" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Dry run validation passed**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "The ArgoCD configuration changes in this PR have been validated successfully." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Next steps:**" >> $GITHUB_STEP_SUMMARY
+        echo "1. Review and approve this PR" >> $GITHUB_STEP_SUMMARY
+        echo "2. Merge to main branch" >> $GITHUB_STEP_SUMMARY
+        echo "3. Run the upgrade pipeline manually when ready" >> $GITHUB_STEP_SUMMARY
+        
+        # Show validation results
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>View validation log</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        tail -50 argocd/pr-validation.log >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
           
     - name: Upload PR validation artifacts
       uses: actions/upload-artifact@v4
