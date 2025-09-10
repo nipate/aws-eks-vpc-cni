@@ -52,6 +52,12 @@ jobs:
         helm repo add argo https://argoproj.github.io/argo-helm
         helm repo update
         
+    - name: Validate ArgoCD version
+      run: |
+        cd argocd
+        chmod +x validate-version.sh
+        ./validate-version.sh ${{ github.event.inputs.target_version }}
+        
     - name: Run dry run validation
       id: dry-run
       run: |
@@ -59,12 +65,9 @@ jobs:
         chmod +x upgrade-comprehensive.sh
         
         # Run dry run and capture output
-        ./upgrade-comprehensive.sh ${{ github.event.inputs.target_version }} ${{ github.event.inputs.helm_chart_version }} true > dry-run-output.log 2>&1
-        
-        # Check if dry run was successful
-        if grep -q "dry run for argocd" dry-run-output.log; then
+        if ./upgrade-comprehensive.sh ${{ github.event.inputs.target_version }} ${{ github.event.inputs.helm_chart_version }} true > dry-run-output.log 2>&1; then
           echo "success=true" >> $GITHUB_OUTPUT
-          echo "✅ Dry run validation successful"
+          echo "✅ Comprehensive dry run validation successful"
         else
           echo "success=false" >> $GITHUB_OUTPUT
           echo "❌ Dry run validation failed"
