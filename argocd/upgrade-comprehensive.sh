@@ -53,6 +53,18 @@ kubectl get secret -n $NAMESPACE -o yaml > $BACKUP_DIR/secrets.yaml
 kubectl get applications.argoproj.io -n $NAMESPACE -o yaml > $BACKUP_DIR/applications.yaml 2>/dev/null || echo "No applications to backup"
 kubectl get applicationsets.argoproj.io -n $NAMESPACE -o yaml > $BACKUP_DIR/applicationsets.yaml 2>/dev/null || echo "No applicationsets to backup"
 
+# Upload backup to S3 (optional)
+if [ "$S3_BACKUP_BUCKET" != "" ]; then
+    echo "Uploading backup to S3..."
+    if aws s3 cp $BACKUP_DIR s3://$S3_BACKUP_BUCKET/argocd-backups/$(basename $BACKUP_DIR)/ --recursive; then
+        echo "✅ Backup uploaded to S3: s3://$S3_BACKUP_BUCKET/argocd-backups/$(basename $BACKUP_DIR)/"
+    else
+        echo "⚠️ S3 backup failed, continuing with local backup only"
+    fi
+else
+    echo "S3_BACKUP_BUCKET not set, skipping S3 backup"
+fi
+
 echo "=== Phase 3: Pre-Upgrade Preparation ==="
 
 # Update repositories
