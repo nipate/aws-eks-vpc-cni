@@ -1,0 +1,21 @@
+global:
+  image:
+    tag: "v2.14.11"
+
+server:
+  service:
+    type: LoadBalancer
+  config:
+    url: ""
+  
+controller:
+  metrics:
+    enabled: true
+
+repoServer:
+  metrics:
+    enabled: true
+
+configs:
+  params:
+    server.insecure: true
