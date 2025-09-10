@@ -1,0 +1,81 @@
+name: ArgoCD Comprehensive Upgrade Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Target ArgoCD version'
+        required: true
+        default: 'v2.15.0'
+      helm_chart_version:
+        description: 'Target Helm chart version'
+        required: true
+        default: '7.10.0'
+      dry_run:
+        description: 'Dry run mode (true/false)'
+        type: boolean
+        default: true
+      environment:
+        description: 'Target environment'
+        type: choice
+        options:
+        - poc
+        - staging
+        - production
+        default: 'poc'
+
+env:
+  NAMESPACE: argocd
+  CLUSTER_NAME: vpc-cni-argocd-poc
+  REGION: us-east-1
+
+jobs:
+  comprehensive-upgrade:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.REGION }}
+        
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region $REGION --name $CLUSTER_NAME
+        
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.12.0'
+        
+    - name: Add ArgoCD Helm repo
+      run: |
+        helm repo add argo https://argoproj.github.io/argo-helm
+        helm repo update
+        
+    - name: Run comprehensive upgrade
+      run: |
+        cd argocd
+        chmod +x upgrade-comprehensive.sh
+        ./upgrade-comprehensive.sh ${{ github.event.inputs.target_version }} ${{ github.event.inputs.helm_chart_version }} ${{ github.event.inputs.dry_run }}
+        
+    - name: Upload backup artifacts
+      if: ${{ github.event.inputs.dry_run == 'false' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: argocd-upgrade-backup-${{ github.run_number }}
+        path: argocd/backup/
+        retention-days: 30
+        
+    - name: Post-upgrade notification
+      if: ${{ github.event.inputs.dry_run == 'false' }}
+      run: |
+        echo "ArgoCD upgrade completed successfully!"
+        echo "Target version: ${{ github.event.inputs.target_version }}"
+        echo "Environment: ${{ github.event.inputs.environment }}"
+        echo "Backup artifacts uploaded for rollback if needed"

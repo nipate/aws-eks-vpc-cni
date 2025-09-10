@@ -1,0 +1,18 @@
+USER-SUPPLIED VALUES:
+configs:
+  params:
+    server.insecure: true
+controller:
+  metrics:
+    enabled: true
+global:
+  image:
+    tag: v2.14.11
+repoServer:
+  metrics:
+    enabled: true
+server:
+  config:
+    url: ""
+  service:
+    type: LoadBalancer
