@@ -1,0 +1,220 @@
+### Pipeline Configuration
+```yaml
+trigger: none
+
+parameters:
+- name: targetVersion
+  displayName: 'Target ArgoCD Version'
+  type: string
+  default: 'v2.15.0'
+- name: helmChartVersion
+  displayName: 'Target Helm Chart Version'
+  type: string
+  default: '7.6.12'
+- name: skipDryRun
+  displayName: 'Skip Dry Run'
+  type: boolean
+  default: false
+
+variables:
+  NAMESPACE: 'argocd'
+  CLUSTER_NAME: 'vpc-cni-argocd-poc'
+  REGION: 'us-east-1'
+  S3_BACKUP_BUCKET: 'argocd-upgrade-backups'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: DryRunValidation
+  displayName: 'Dry Run Validation'
+  jobs:
+  - job: ValidateUpgrade
+    displayName: 'Validate ArgoCD Upgrade'
+    steps:
+    - checkout: self
+    
+    - task: AWSShellScript@1
+      displayName: 'Configure AWS CLI'
+      inputs:
+        awsCredentials: 'AWS-Service-Connection'
+        regionName: '$(REGION)'
+        scriptType: 'inline'
+        inlineScript: |
+          aws eks update-kubeconfig --region $(REGION) --name $(CLUSTER_NAME)
+          
+    - task: HelmInstaller@1
+      displayName: 'Install Helm'
+      inputs:
+        helmVersionToInstall: '3.12.0'
+        
+    - task: Bash@3
+      displayName: 'Add ArgoCD Helm Repository'
+      inputs:
+        targetType: 'inline'
+        script: |
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+          
+    - task: Bash@3
+      displayName: 'Validate ArgoCD Version'
+      inputs:
+        targetType: 'inline'
+        script: |
+          cd argocd
+          chmod +x validate-version.sh
+          ./validate-version.sh ${{ parameters.targetVersion }}
+          
+    - task: AWSShellScript@1
+      displayName: 'Run Comprehensive Dry Run'
+      inputs:
+        awsCredentials: 'AWS-Service-Connection'
+        regionName: '$(REGION)'
+        scriptType: 'inline'
+        inlineScript: |
+          cd argocd
+          chmod +x upgrade-comprehensive.sh
+          export S3_BACKUP_BUCKET=$(S3_BACKUP_BUCKET)
+          
+          if ./upgrade-comprehensive.sh ${{ parameters.targetVersion }} ${{ parameters.helmChartVersion }} true > dry-run-output.log 2>&1; then
+            echo "##vso[task.setvariable variable=DryRunSuccess;isOutput=true]true"
+            echo " Comprehensive dry run validation successful"
+          else
+            echo "##vso[task.setvariable variable=DryRunSuccess;isOutput=true]false"
+            echo " Dry run validation failed"
+            cat dry-run-output.log
+            exit 1
+          fi
+      name: DryRunStep
+      
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Dry Run Artifacts'
+      inputs:
+        pathToPublish: 'argocd/dry-run-output.log'
+        artifactName: 'dry-run-results'
+        
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Backup Artifacts'
+      inputs:
+        pathToPublish: 'argocd/backup'
+        artifactName: 'backup-files'
+        condition: succeededOrFailed()
+
+- stage: ManualApproval
+  displayName: 'Manual Approval Gate'
+  dependsOn: DryRunValidation
+  condition: and(succeeded(), eq('${{ parameters.skipDryRun }}', false), eq(dependencies.DryRunValidation.outputs['ValidateUpgrade.DryRunStep.DryRunSuccess'], 'true'))
+  jobs:
+  - job: waitForValidation
+    displayName: 'Wait for Manual Approval'
+    pool: server
+    timeoutInMinutes: 4320 # 3 days
+    steps:
+    - task: ManualValidation@0
+      displayName: 'Manual Approval Required'
+      inputs:
+        notifyUsers: |
+          $(Build.RequestedForEmail)
+        instructions: |
+          🔒 Manual approval required before proceeding with ArgoCD upgrade
+          
+          Dry run validation completed successfully
+          Review the dry run artifacts before approving
+          
+          Target Version: ${{ parameters.targetVersion }}
+          Chart Version: ${{ parameters.helmChartVersion }}
+          
+          Check artifacts for detailed validation results.
+
+- stage: ActualUpgrade
+  displayName: 'Execute ArgoCD Upgrade'
+  dependsOn: 
+  - DryRunValidation
+  - ManualApproval
+  condition: |
+    and(
+      in(dependencies.DryRunValidation.result, 'Succeeded'),
+      or(
+        in(dependencies.ManualApproval.result, 'Succeeded'),
+        eq('${{ parameters.skipDryRun }}', true)
+      ),
+      eq(dependencies.DryRunValidation.outputs['ValidateUpgrade.DryRunStep.DryRunSuccess'], 'true')
+    )
+  jobs:
+  - job: UpgradeArgoCD
+    displayName: 'Upgrade ArgoCD'
+    steps:
+    - checkout: self
+    
+    - task: AWSShellScript@1
+      displayName: 'Configure AWS CLI'
+      inputs:
+        awsCredentials: 'AWS-Service-Connection'
+        regionName: '$(REGION)'
+        scriptType: 'inline'
+        inlineScript: |
+          aws eks update-kubeconfig --region $(REGION) --name $(CLUSTER_NAME)
+          
+    - task: HelmInstaller@1
+      displayName: 'Install Helm'
+      inputs:
+        helmVersionToInstall: '3.12.0'
+        
+    - task: Bash@3
+      displayName: 'Add ArgoCD Helm Repository'
+      inputs:
+        targetType: 'inline'
+        script: |
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+          
+    - task: AWSShellScript@1
+      displayName: 'Execute ArgoCD Upgrade'
+      inputs:
+        awsCredentials: 'AWS-Service-Connection'
+        regionName: '$(REGION)'
+        scriptType: 'inline'
+        inlineScript: |
+          cd argocd
+          chmod +x upgrade-comprehensive.sh
+          export S3_BACKUP_BUCKET=$(S3_BACKUP_BUCKET)
+          ./upgrade-comprehensive.sh ${{ parameters.targetVersion }} ${{ parameters.helmChartVersion }} false
+          
+    - task: AWSShellScript@1
+      displayName: 'Post-Upgrade Verification'
+      inputs:
+        awsCredentials: 'AWS-Service-Connection'
+        regionName: '$(REGION)'
+        scriptType: 'inline'
+        inlineScript: |
+          echo "=== Post-Upgrade Verification ==="
+          
+          # Get current version
+          CURRENT_VERSION=$(kubectl get deployment argocd-server -n $(NAMESPACE) -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "Current ArgoCD Version: $CURRENT_VERSION"
+          
+          # Check pod status
+          kubectl get pods -n $(NAMESPACE)
+          
+          # Verify S3 backup
+          aws s3 ls s3://$(S3_BACKUP_BUCKET)/argocd-backups/ --recursive | tail -10
+          
+          echo "##vso[task.setvariable variable=FinalVersion]$CURRENT_VERSION"
+          
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Upgrade Artifacts'
+      inputs:
+        pathToPublish: 'argocd/backup'
+        artifactName: 'upgrade-results'
+        
+    - task: Bash@3
+      displayName: 'Upgrade Summary'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "## 🚀 ArgoCD Upgrade Results"
+          echo "- **Target Version**: ${{ parameters.targetVersion }}"
+          echo "- **Chart Version**: ${{ parameters.helmChartVersion }}"
+          echo "- **Final Version**: $(FinalVersion)"
+          echo "- **Status**:  Upgrade Completed Successfully"
+          echo "- **Backup Location**: S3 bucket $(S3_BACKUP_BUCKET)"

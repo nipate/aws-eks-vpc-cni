@@ -57,9 +57,9 @@ kubectl get applicationsets.argoproj.io -n $NAMESPACE -o yaml > $BACKUP_DIR/appl
 if [ "$S3_BACKUP_BUCKET" != "" ]; then
     echo "Uploading backup to S3..."
     if aws s3 cp $BACKUP_DIR s3://$S3_BACKUP_BUCKET/argocd-backups/$(basename $BACKUP_DIR)/ --recursive; then
-        echo "✅ Backup uploaded to S3: s3://$S3_BACKUP_BUCKET/argocd-backups/$(basename $BACKUP_DIR)/"
+        echo " Backup uploaded to S3: s3://$S3_BACKUP_BUCKET/argocd-backups/$(basename $BACKUP_DIR)/"
     else
-        echo "⚠️ S3 backup failed, continuing with local backup only"
+        echo " S3 backup failed, continuing with local backup only"
     fi
 else
     echo "S3_BACKUP_BUCKET not set, skipping S3 backup"
@@ -81,12 +81,12 @@ echo "Values comparison saved to $BACKUP_DIR/"
 # Validate Docker image exists
 echo "Validating Docker image availability..."
 if ! kubectl run image-test --image=quay.io/argoproj/argocd:$TARGET_VERSION --dry-run=client -o yaml > /dev/null 2>&1; then
-    echo "❌ ERROR: Docker image quay.io/argoproj/argocd:$TARGET_VERSION not found"
+    echo " ERROR: Docker image quay.io/argoproj/argocd:$TARGET_VERSION not found"
     echo "Available ArgoCD images:"
     curl -s "https://quay.io/api/v1/repository/argoproj/argocd/tag/" | grep -o '"name":"[^"]*"' | head -10 || echo "Could not fetch available tags"
     exit 1
 fi
-echo "✅ Docker image validation successful"
+echo " Docker image validation successful"
 
 echo "=== Phase 4: Upgrade Execution ==="
 
@@ -100,9 +100,9 @@ if [ "$DRY_RUN" = "true" ]; then
         --version $CHART_VERSION \
         --values values-upgrade.yaml \
         --dry-run --debug; then
-        echo "✅ DRY RUN SUCCESSFUL"
+        echo " DRY RUN SUCCESSFUL"
     else
-        echo "❌ DRY RUN FAILED"
+        echo " DRY RUN FAILED"
         exit 1
     fi
     echo "=== DRY RUN COMPLETED ==="
@@ -115,7 +115,7 @@ if ! helm upgrade argocd argo/argo-cd \
     --version $CHART_VERSION \
     --values values-upgrade.yaml \
     --wait --timeout=10m; then
-    echo "❌ HELM UPGRADE FAILED - Stopping execution"
+    echo " HELM UPGRADE FAILED - Stopping execution"
     echo "Checking rollback options..."
     helm history argocd -n $NAMESPACE
     echo "To rollback: helm rollback argocd -n $NAMESPACE"
@@ -128,13 +128,13 @@ echo "=== Phase 5: Verification Steps ==="
 # Check deployments with error handling
 echo "Verifying deployment rollouts..."
 if ! kubectl rollout status deploy/argocd-server -n $NAMESPACE --timeout=300s; then
-    echo "❌ ArgoCD server rollout failed"
+    echo " ArgoCD server rollout failed"
     kubectl get pods -n $NAMESPACE
     exit 1
 fi
 
 if ! kubectl rollout status deploy/argocd-repo-server -n $NAMESPACE --timeout=300s; then
-    echo "❌ ArgoCD repo-server rollout failed"
+    echo " ArgoCD repo-server rollout failed"
     kubectl get pods -n $NAMESPACE
     exit 1
 fi
@@ -144,7 +144,7 @@ kubectl rollout status deploy/argocd-application-controller -n $NAMESPACE --time
 # Verify no failed pods
 FAILED_PODS=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase!=Running,status.phase!=Succeeded -o name 2>/dev/null | wc -l)
 if [ "$FAILED_PODS" -gt 0 ]; then
-    echo "❌ Found $FAILED_PODS failed pods:"
+    echo " Found $FAILED_PODS failed pods:"
     kubectl get pods -n $NAMESPACE --field-selector=status.phase!=Running,status.phase!=Succeeded
     echo "Upgrade verification failed"
     exit 1
@@ -170,12 +170,12 @@ kubectl get events -n $NAMESPACE --sort-by='.metadata.creationTimestamp' | tail 
 # Final version verification
 NEW_VERSION=$(kubectl get deployment argocd-server -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}')
 if [[ "$NEW_VERSION" == *"$TARGET_VERSION"* ]]; then
-    echo "=== ✅ UPGRADE SUCCESSFUL ==="
+    echo "===  UPGRADE SUCCESSFUL ==="
     echo "New ArgoCD version: $NEW_VERSION"
     echo "Target version: $TARGET_VERSION"
     echo "Backup location: $BACKUP_DIR"
 else
-    echo "=== ❌ UPGRADE VERIFICATION FAILED ==="
+    echo "===  UPGRADE VERIFICATION FAILED ==="
     echo "Expected version: $TARGET_VERSION"
     echo "Actual version: $NEW_VERSION"
     echo "Upgrade may have failed silently"
