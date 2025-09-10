@@ -66,6 +66,16 @@ helm search repo argo/argo-cd --versions | head -10
 helm show values argo/argo-cd --version $CHART_VERSION > $BACKUP_DIR/new-values.yaml
 echo "Values comparison saved to $BACKUP_DIR/"
 
+# Validate Docker image exists
+echo "Validating Docker image availability..."
+if ! kubectl run image-test --image=quay.io/argoproj/argocd:$TARGET_VERSION --dry-run=client -o yaml > /dev/null 2>&1; then
+    echo "❌ ERROR: Docker image quay.io/argoproj/argocd:$TARGET_VERSION not found"
+    echo "Available ArgoCD images:"
+    curl -s "https://quay.io/api/v1/repository/argoproj/argocd/tag/" | grep -o '"name":"[^"]*"' | head -10 || echo "Could not fetch available tags"
+    exit 1
+fi
+echo "✅ Docker image validation successful"
+
 echo "=== Phase 4: Upgrade Execution ==="
 
 # Update values file
@@ -73,28 +83,61 @@ sed -i "s/tag: \".*\"/tag: \"$TARGET_VERSION\"/" values-upgrade.yaml
 
 if [ "$DRY_RUN" = "true" ]; then
     echo "=== DRY RUN MODE - No actual changes will be made ==="
-    helm upgrade argocd argo/argo-cd \
+    if helm upgrade argocd argo/argo-cd \
         --namespace $NAMESPACE \
         --version $CHART_VERSION \
         --values values-upgrade.yaml \
-        --dry-run --debug
+        --dry-run --debug; then
+        echo "✅ DRY RUN SUCCESSFUL"
+    else
+        echo "❌ DRY RUN FAILED"
+        exit 1
+    fi
     echo "=== DRY RUN COMPLETED ==="
     exit 0
 fi
 
 echo "Performing actual upgrade..."
-helm upgrade argocd argo/argo-cd \
+if ! helm upgrade argocd argo/argo-cd \
     --namespace $NAMESPACE \
     --version $CHART_VERSION \
     --values values-upgrade.yaml \
-    --wait --timeout=10m
+    --wait --timeout=10m; then
+    echo "❌ HELM UPGRADE FAILED - Stopping execution"
+    echo "Checking rollback options..."
+    helm history argocd -n $NAMESPACE
+    echo "To rollback: helm rollback argocd -n $NAMESPACE"
+    exit 1
+fi
+echo "✅ Helm upgrade completed successfully"
 
 echo "=== Phase 5: Verification Steps ==="
 
-# Check deployments
-kubectl rollout status deploy/argocd-server -n $NAMESPACE --timeout=300s
-kubectl rollout status deploy/argocd-repo-server -n $NAMESPACE --timeout=300s
+# Check deployments with error handling
+echo "Verifying deployment rollouts..."
+if ! kubectl rollout status deploy/argocd-server -n $NAMESPACE --timeout=300s; then
+    echo "❌ ArgoCD server rollout failed"
+    kubectl get pods -n $NAMESPACE
+    exit 1
+fi
+
+if ! kubectl rollout status deploy/argocd-repo-server -n $NAMESPACE --timeout=300s; then
+    echo "❌ ArgoCD repo-server rollout failed"
+    kubectl get pods -n $NAMESPACE
+    exit 1
+fi
+
 kubectl rollout status deploy/argocd-application-controller -n $NAMESPACE --timeout=300s 2>/dev/null || echo "Application controller not found"
+
+# Verify no failed pods
+FAILED_PODS=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase!=Running,status.phase!=Succeeded -o name 2>/dev/null | wc -l)
+if [ "$FAILED_PODS" -gt 0 ]; then
+    echo "❌ Found $FAILED_PODS failed pods:"
+    kubectl get pods -n $NAMESPACE --field-selector=status.phase!=Running,status.phase!=Succeeded
+    echo "Upgrade verification failed"
+    exit 1
+fi
+echo "✅ All deployments rolled out successfully"
 
 # Check services
 kubectl get svc -n $NAMESPACE
@@ -112,7 +155,17 @@ echo "=== Final Health Check ==="
 kubectl get all -n $NAMESPACE
 kubectl get events -n $NAMESPACE --sort-by='.metadata.creationTimestamp' | tail -5
 
-echo "=== Upgrade Process Completed ==="
-echo "New ArgoCD version:"
-kubectl get deployment argocd-server -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}'
-echo -e "\nBackup location: $BACKUP_DIR"
+# Final version verification
+NEW_VERSION=$(kubectl get deployment argocd-server -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}')
+if [[ "$NEW_VERSION" == *"$TARGET_VERSION"* ]]; then
+    echo "=== ✅ UPGRADE SUCCESSFUL ==="
+    echo "New ArgoCD version: $NEW_VERSION"
+    echo "Target version: $TARGET_VERSION"
+    echo "Backup location: $BACKUP_DIR"
+else
+    echo "=== ❌ UPGRADE VERIFICATION FAILED ==="
+    echo "Expected version: $TARGET_VERSION"
+    echo "Actual version: $NEW_VERSION"
+    echo "Upgrade may have failed silently"
+    exit 1
+fi
